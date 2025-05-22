@@ -8,10 +8,9 @@ const int BUZZER_PIN = 34;
 const int TOUCH_PIN = 26;
 const int VIBRATION_PIN = 18;
 const int BUTTON_PIN = 14;
-// const char WIFI_SSID[] = "CoCoLabor3_IoT";
-// const char WIFI_PASS[] = "cocolabor12345";
-const char WIFI_SSID[] = "Wlan YK";
-const char WIFI_PASS[] = "7713257570046685";
+const char WIFI_SSID[] = "CoCoLabor3_IoT";
+const char WIFI_PASS[] = "cocolabor12345";
+
 
 //MQTT Setup
 const char MQTT_SERVER[] = "6c900d6407744144abdc9e2fa58d9cdd.s1.eu.hivemq.cloud";
@@ -89,7 +88,7 @@ void loop() {
     mqtt_client.loop();
 
     //MQTT Message senden bzw Highfive senden
-    int touchState = digitalRead(TOUCH_PIN);
+    bool touchState = digitalRead(TOUCH_PIN);
     if (touchState && !touchSent) {
         Serial.println("Touch erkannt → sende High Five");
         mqtt_client.publish(MQTT_TOPIC, "highfive"); //für device2 MQTT_TOPIC = MQTT_TOPIC2
@@ -100,6 +99,10 @@ void loop() {
     if (touchSent && millis() - touchTime > 2000) {
         touchSent = false;
     }
+    // Reset recived touch wenn länger nicht gedrückt
+    if (receivedTouch && millis() - recivedTime > 2000) {
+        receivedTouch = false;
+    }
 
     // Nach Highfive prüfen
     if (touchSent && receivedTouch) {
@@ -107,5 +110,6 @@ void loop() {
         digitalWrite(LED_PIN, HIGH);
         delay(3000); // LED 3s an
         digitalWrite(LED_PIN, LOW);
+        receivedTouch = false;
     }
 }
