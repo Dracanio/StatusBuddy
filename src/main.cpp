@@ -2,51 +2,126 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include <WiFiManager.h>
+#include "rgb_lcd.h"
+#include "TouchStates/TouchStates.h"
+#include "config.h"
 
-const int LED_PIN = 33;
-const int BUZZER_PIN = 34;
-const int TOUCH_PIN = 26;
-const int VIBRATION_PIN = 18;
-const int BUTTON_PIN = 14;
-const char WIFI_SSID[] = "CoCoLabor3_IoT";
-const char WIFI_PASS[] = "cocolabor12345";
-
-
-//MQTT Setup
-const char MQTT_SERVER[] = "6c900d6407744144abdc9e2fa58d9cdd.s1.eu.hivemq.cloud";
-const char MQTT_USERNAME[] = "kito1";
-const char MQTT_PASS[] = "Iot123456";
-const int MQTT_PORT = 8883;
-const char MQTT_CLIENT_ID[] = "Device1";    //muss für Devices angepasst werden
-const char MQTT_TOPIC[] = "statusBuddy/Device1";
-const char MQTT_TOPIC2[] = "statusBuddy/Device2";
+#define MQTT_TOPIC_CONST "statusBuddy/Device1"
+#define MQTT_TOPIC2_CONST "statusBuddy/Device2"
 
 WiFiClientSecure secureClient;
 PubSubClient mqtt_client(secureClient);
-WiFiServer server(80);
+rgb_lcd lcd;
+TouchStates touch_state;
+SemaphoreHandle_t lcd_semaphore;
 
 bool touchSent = false;
 bool receivedTouch = false;
 unsigned long touchTime = 0;
 unsigned long recivedTime = 0;
 
+struct touch_struct {
+    bool touched;
+    unsigned long timestamp;
+};
+touch_struct our_touch;
+touch_struct opponent_touch;
+
+
 void setupWiFi() {
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print("connecting...");
+    // WiFiManager
+    WiFiManager wm;
+    wm.setDebugOutput(true);
+    bool res = wm.autoConnect(WiFiName, "12345678");
+    if (!res) {
+        Serial.println("Keine Verbindung – Neustart");
+        ESP.restart();
     }
-    server.begin();
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+    Serial.println("WLAN verbunden!");
 }
 
 void setupPins() {
     pinMode(LED_PIN, OUTPUT);
-    //pinMode(BUZZER_PIN, OUTPUT);
-    //pinMode(VIBRATION_PIN, OUTPUT);
-    //pinMode(BUTTON_PIN, INPUT);
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(VIBRATION_PIN, OUTPUT);
     pinMode(TOUCH_PIN, INPUT);
+}
+
+void touch_detection(void* parameters) {
+    (void) parameters;
+    for (;;) {
+        while (digitalRead(TOUCH_PIN) == HIGH) {
+            mqtt_client.publish(MQTT_TOPIC_Publish, "highfive");
+            our_touch.touched = true;
+            our_touch.timestamp = millis();
+        }
+        vTaskDelay(200 / portTICK_RATE_MS);
+    }
+}
+
+TouchStates get_touch_state() {
+    if (our_touch.touched == true && opponent_touch.touched == true) {
+        return BOTH;
+    }
+    if (our_touch.touched == true || opponent_touch.touched == true) {
+        return ONE;
+    }
+    return NONE;
+}
+
+void lcd_writer(void *parameters) {
+    (void) parameters;
+    for (;;) {
+        if (xSemaphoreTake(lcd_semaphore, portMAX_DELAY)) {
+            switch (get_touch_state()) {
+                case NONE:
+                    lcd.setColor(RED);
+                    break;
+                case ONE:
+                    lcd.setColor(BLUE);
+                    break;
+                case BOTH:
+                    lcd.setColor(GREEN);
+                    break;
+                default:
+                    break;
+            }
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            xSemaphoreGive(lcd_semaphore);
+        }
+        vTaskDelay(500 / portTICK_RATE_MS);
+    }
+}
+
+void keep_connection_alive(void *parameters) {
+    (void) parameters;
+    for (;;) {
+        if (!mqtt_client.connected()) {
+            while (!mqtt_client.connected()) {
+                if (mqtt_client.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASS)) {
+                    mqtt_client.subscribe(MQTT_TOPIC_CONST); //use MQTT_TOPIC_CONST or MQTT_TOPIC2_CONST
+                }else {
+                    vTaskDelay(500 / portTICK_RATE_MS);
+                }
+            }
+        }
+        mqtt_client.loop();
+        vTaskDelay(10 / portTICK_RATE_MS);
+    }
+}
+
+void touch_reset(void *parameters) {
+    (void) parameters;
+    for (;;) {
+        if (our_touch.touched && millis() - our_touch.timestamp > 2000) {
+            our_touch.touched = false;
+        }
+        if (opponent_touch.touched && millis() - our_touch.timestamp > 2000) {
+            opponent_touch.touched = false;
+        }
+    }
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -55,9 +130,11 @@ void callback(char* topic, byte* payload, unsigned int length) {
         msg += (char)payload[i];
     }
 
-    if (String(topic) == MQTT_TOPIC2 && msg == "highfive") { //für device2 MQTT_TOPIC2 = MQTT_TOPIC
+    if (String(topic) == MQTT_TOPIC_Subscribe && msg == "highfive") {
         receivedTouch = true;
         recivedTime = millis();
+        //opponent_touch.touched = true;
+        //opponent_touch.timestamp = millis();
         Serial.println("MQTT: High Five vom anderen Gerät empfangen!");
     }
 }
@@ -65,7 +142,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 void reconnect() {
     while (!mqtt_client.connected()) {
         if (mqtt_client.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASS)) {
-            mqtt_client.subscribe(MQTT_TOPIC2); //für device2 MQTT_TOPIC2 = MQTT_TOPIC
+            mqtt_client.subscribe(MQTT_TOPIC_Subscribe);
         } else {
             delay(1000);
             Serial.println("MQTT: Reconnecting to server");
@@ -81,6 +158,14 @@ void setup() {
     mqtt_client.setServer(MQTT_SERVER,MQTT_PORT);
     mqtt_client.setCallback(callback);
 
+
+    //WIP
+    lcd_semaphore = xSemaphoreCreateMutex();
+    our_touch.touched = false;
+   /* xTaskCreate(touch_detection, "Touch detection Task", 2048, NULL, 1, NULL);
+    xTaskCreate(lcd_writer, "LCD Writer Task", 2048, NULL, 1, NULL);
+    xTaskCreate(touch_reset, "Reset Touch Task", 2048, NULL, 1, NULL);
+    xTaskCreatePinnedToCore(keep_connection_alive, "Keep Connection Alive Task", 2048, NULL,1,NULL, ARDUINO_RUNNING_CORE);*/
 }
 
 void loop() {
@@ -91,7 +176,7 @@ void loop() {
     bool touchState = digitalRead(TOUCH_PIN);
     if (touchState && !touchSent) {
         Serial.println("Touch erkannt → sende High Five");
-        mqtt_client.publish(MQTT_TOPIC, "highfive"); //für device2 MQTT_TOPIC = MQTT_TOPIC2
+        mqtt_client.publish(MQTT_TOPIC_Publish, "highfive");
         touchSent = true;
         touchTime = millis();
     }
@@ -108,8 +193,12 @@ void loop() {
     if (touchSent && receivedTouch) {
         Serial.println("🎉 HIGH FIVE erkannt!");
         digitalWrite(LED_PIN, HIGH);
+        digitalWrite(BUZZER_PIN, HIGH);
+        digitalWrite(VIBRATION_PIN, HIGH);
         delay(3000); // LED 3s an
         digitalWrite(LED_PIN, LOW);
+        digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(VIBRATION_PIN, LOW);
         receivedTouch = false;
     }
 }
