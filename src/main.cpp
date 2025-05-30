@@ -69,12 +69,18 @@ void lcd_writer(void *parameters) {
             switch (get_touch_state()) {
                 case NONE:
                     lcd.setColor(RED);
+                    digitalWrite(BUZZER_PIN, LOW);
+                    digitalWrite(VIBRATION_PIN, LOW);
                     break;
                 case ONE:
                     lcd.setColor(BLUE);
+                    digitalWrite(BUZZER_PIN, LOW);
+                    digitalWrite(VIBRATION_PIN, LOW);
                     break;
                 case BOTH:
                     lcd.setColor(GREEN);
+                    digitalWrite(BUZZER_PIN, HIGH);
+                    digitalWrite(VIBRATION_PIN, HIGH);
                     break;
                 default:
                     break;
