@@ -23,4 +23,10 @@ const char MQTT_CLIENT_ID[] = "Device1";    //muss für Devices angepasst werden
 const char MQTT_TOPIC_Publish[] = "statusBuddy/Device1";
 const char MQTT_TOPIC_Subscribe[] = "statusBuddy/Device2";
 
+//Touch Struct
+struct touch_struct {
+    bool touched;
+    unsigned long timestamp;
+};
+
 #endif //CONFIG_H
